@@ -14,6 +14,12 @@ import streamlit as st
 import pydeck as pdk
 from datetime import date, time
 import pandas as pd
+import math
+import os
+import numpy as np
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from constellation_utils import load_constellation_data
 
 # Step 1: Get User Location (Working well do not touch )
 def get_user_location():
@@ -169,6 +175,72 @@ def get_object_description(name):
         pass
     return None
 
+def load_constellation_lines(fab_path):
+    """Load constellation lines from .fab file. Returns a list of (HIP1, HIP2) tuples."""
+    lines = []
+    with open(fab_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            # Format: CONST_ABBR N HIP1 HIP2 HIP3 ...
+            hips = [int(p) for p in parts[2:]]
+            for i in range(0, len(hips)-1, 2):
+                lines.append((hips[i], hips[i+1]))
+    return lines
+
+def label_constellations(ax, constellation_lines, hip_coords, hip_name_df):
+    """Label constellations at the midpoint of their lines."""
+    for (hip1, hip2) in constellation_lines:
+        if hip1 in hip_coords and hip2 in hip_coords:
+            az1, r1 = hip_coords[hip1]
+            az2, r2 = hip_coords[hip2]
+            mid_az = (az1 + az2) / 2
+            mid_r = (r1 + r2) / 2
+            name1 = hip_name_df.get(hip1, str(hip1))
+            ax.text(mid_az, mid_r, name1, fontsize=6, color='gray', ha='center', va='center', alpha=0.5)
+
+# --- Sky Chart ---
+def plot_sky_chart(objects, address, time_label, constellation_lines, hip_name_df):
+    print("[INFO] Plotting sky chart...")
+    fig = plt.figure(figsize=(8, 8))
+    ax = plt.subplot(111, polar=True)
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_title(f"Sky Chart – {address} – {time_label}", fontsize=14)
+
+    hip_coords = {}
+    for obj in objects:
+        if obj['type'] == 'Star':
+            hip_id = obj.get('hip_id')
+            if hip_id is not None:
+                az_rad = math.radians(obj['azimuth'])
+                r = 90 - obj['altitude']
+                hip_coords[hip_id] = (az_rad, r)
+
+    for hip1, hip2 in constellation_lines:
+        if hip1 in hip_coords and hip2 in hip_coords:
+            az1, r1 = hip_coords[hip1]
+            az2, r2 = hip_coords[hip2]
+            ax.plot([az1, az2], [r1, r2], 'gray', linewidth=0.5)
+
+    label_constellations(ax, constellation_lines, hip_coords, hip_name_df)
+
+    for obj in objects:
+        az_rad = math.radians(obj['azimuth'])
+        r = 90 - obj['altitude']
+        marker = {'Planet': 'o', 'Star': '*', 'Satellite': 's', 'Sun': 'X', 'Moon': 'D'}.get(obj['type'], '.')
+        name = obj.get('display_name', obj['name'])
+        ax.plot(az_rad, r, marker, label=f"{name} ({obj['type']})", markersize=6)
+        ax.text(az_rad, r, name, fontsize=8, ha='center', va='bottom')
+
+    ax.set_rlim(0, 90)
+    ax.set_rlabel_position(135)
+    ax.grid(True)
+    plt.legend(loc='lower right', bbox_to_anchor=(1.25, 0.0))
+    plt.savefig(f"sky_chart_{time_label}.png")
+    plt.show()
+
 # Main Program
 def main():
     st.set_page_config(page_title="What's Up? Astronomy Dashboard", layout="wide")
@@ -323,6 +395,34 @@ def main():
         st.pyplot(fig)
     except Exception as e:
         st.info("Sky chart not available: " + str(e))
+
+    # --- Sky Chart Visualization (Full) ---
+    st.header("5. Full Sky Chart (Constellations)")
+    try:
+        # Load constellation lines and HIP name data
+        fab_path = os.path.join(os.path.dirname(__file__), '../constellationship.fab')
+        constellation_lines = load_constellation_lines(fab_path)
+        # HIP name DataFrame: map HIP int to name (for labeling)
+        hip_name_df = {}
+        try:
+            with open(os.path.join(os.path.dirname(__file__), '../hip_main.dat'), 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) > 1:
+                        try:
+                            hip_id = int(parts[0])
+                            name = parts[1]
+                            hip_name_df[hip_id] = name
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        # Use filtered objects for the chart
+        time_label = dt.strftime('%Y%m%d_%H%M')
+        plot_sky_chart(filtered, address, time_label, constellation_lines, hip_name_df)
+        st.success("Full sky chart with constellation lines generated.")
+    except Exception as e:
+        st.warning(f"Full sky chart not available: {e}")
 
     # --- Details Section ---
     st.header("6. Learn More About Each Object")
